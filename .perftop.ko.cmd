@@ -1,1 +1,0 @@
-cmd_/Users/menarulalam/hw4/perftop.ko := ld -r  -EL  -maarch64elf  --build-id  -T ./scripts/module-common.lds -T ./arch/arm64/kernel/module.lds -o /Users/menarulalam/hw4/perftop.ko /Users/menarulalam/hw4/perftop.o /Users/menarulalam/hw4/perftop.mod.o;  true
