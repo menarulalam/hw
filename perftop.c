@@ -7,8 +7,10 @@ MODULE_DESCRIPTION("perftop");
 
 static char func_name[NAME_MAX] = "pick_next_task_fair";
 module_param_string(func, func_name, NAME_MAX, S_IRUGO);
-MODULE_PARM_DESC(func, "Function to kretprobe; this module will report the"
-			" function's execution time");
+MODULE_PARM_DESC(func, "Function to kretprobe; this module will report the function's execution time");
+
+
+DEFINE_SPINLOCK(xxx_lock);
 
 
 
@@ -17,11 +19,89 @@ int ret_count = 0;
 
 int ctx_switch_count = 0;
 
-long long unsigned int task;
+int task;
+
+
+ struct my_data {
+        ktime_t entry_stamp;
+    };
+
+struct hm_node{
+    int key;
+    struct hlist_node node;
+	ktime_t  val;
+	ktime_t rb_key;
+};
+
+DEFINE_HASHTABLE(hm, 9);
+
+
+
+typedef struct RBNode{
+    size_t val;
+	int pid;
+    struct rb_node node;
+} RBNode;
+
+struct rb_root * rbroot;
+
+
+
+void rb_insert(RBNode * new_node){
+    struct rb_node ** p = &(rbroot->rb_node);
+    struct rb_node * prev = NULL;
+    int val = new_node->val;
+            while(*p){
+                prev = *p;
+                RBNode * entry = rb_entry(*p, RBNode, node);
+                if(entry->val>val)
+                    p = &(*p)->rb_left;
+                else
+                    p = &(*p)->rb_right;
+            }
+            rb_link_node(&new_node->node, prev, p);
+            rb_insert_color(&new_node->node, rbroot);
+}
+
+RBNode * rb_find(int val){
+    struct rb_node * p = rbroot->rb_node;
+    while(p){
+        RBNode * entry = rb_entry(p, RBNode, node);
+        if(entry->val==val){
+            pr_info("Found RB Node entry: %d\n", val);
+            return entry;
+        }
+        else if(entry->val>val)
+            p = p->rb_left;
+        else
+            p = p->rb_right;
+    }
+    return NULL;
+}
+
+
+void rb_delete(int val){
+    RBNode * node = rb_find(val);
+    if(node==NULL){
+        pr_info("Node not found for deletion for value: %d\n", val);
+    }
+    rb_erase(&node->node, rbroot);
+    kfree(node);
+    pr_info("Erased and freed %d node from RB tree\n", val);
+}
+
 
 static int proc_show(struct seq_file *m, void *v) {
   seq_printf(m, "Hello world\n");
   seq_printf(m, "entry count: %d\nret count: %d\nctx switch count: %d\n", entry_count, ret_count, ctx_switch_count);
+  struct rb_node * p = rb_last(rbroot);
+  int count = 10;
+  while(p&&count>0){
+	  count--;
+	  RBNode * entry = rb_entry(p, RBNode, node);
+	  seq_printf(m, "%d) PID: %d time: %llu\n", 10-count, entry->pid, entry->val);
+	  p = rb_prev(p);
+  }
   return 0;
 }
 
@@ -39,23 +119,46 @@ static const struct file_operations ops = {
 static struct proc_dir_entry *ent;
 
 
-/* per-instance private data */
-struct my_data {
-	ktime_t entry_stamp;
-};
 
 /* Here we use the entry_hanlder to timestamp function entry */
 static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     entry_count++;
-    task = regs->si;
-	struct my_data *data;
+    int pid = regs->si;
+	task = pid;
+	ktime_t time = ktime_get();
+	
+	spin_lock(&xxx_lock);
+	int bkt;
+    struct hm_node * hmp;
+	bool found = false;
+   	hash_for_each_possible(hm, hmp, node, pid){
+		if(hmp->key==pid){
+			found = true;
+			//pr_info("Entry found for key: %d\n", p->val);
+			hmp->val = time;
+		}
+	}
+	if(!found){
+		//printk(KERN_ALERT "Allocating for hm node\n");
+		struct hm_node * hmn = kmalloc(sizeof(struct hm_node), GFP_KERNEL);
+		if(hmn==NULL){
+			return -1;
+		}
+		hmn->key = pid;
+		hmn->val = time;
+		hmn->rb_key = pid;
+		hash_add(hm, &hmn->node, hmn->key);
+		//printk(KERN_ALERT "Allocating for rb node\n");
+		RBNode * node = kmalloc(sizeof(RBNode), GFP_KERNEL);
+		if(node==NULL) return -1;
+		node->val = pid;
+		node->pid =pid;
+		rb_insert(node);
+	//	printk(KERN_ALERT "Inserted \n");
+}
+	spin_unlock(&xxx_lock);
 
-	if (!current->mm)
-		return 1;	/* Skip kernel threads */
-
-	data = (struct my_data *)ri->data;
-	data->entry_stamp = ktime_get();
 	return 0;
 }
 NOKPROBE_SYMBOL(entry_handler);
@@ -68,19 +171,64 @@ NOKPROBE_SYMBOL(entry_handler);
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     ret_count++;
+	int prev_task;
     if(task != regs->ax){
-        ctx_switch_count++;
-    }
-
-	unsigned long retval = regs_return_value(regs);
-	struct my_data *data = (struct my_data *)ri->data;
-	s64 delta;
-	ktime_t now;
-
-	now = ktime_get();
-	delta = ktime_to_ns(ktime_sub(now, data->entry_stamp));
-	pr_info("%s returned %lu and took %lld ns to execute\n",
-			func_name, retval, (long long)delta);
+		prev_task = task;
+		int curr_task = regs->ax;
+        ktime_t curr = ktime_get();
+		ctx_switch_count++;
+		ktime_t elapsed;
+		
+    
+		bool found = false;
+		spin_lock(&xxx_lock);
+		int bkt;
+    	struct hm_node * hmp;
+		hash_for_each_possible(hm, hmp, node, prev_task){
+				if(hmp->key==prev_task){
+					found = true;
+					//pr_info("Entry found for key: %d\n", p->val);
+					elapsed = curr - hmp->val;
+					RBNode * node = rb_find(hmp->rb_key);
+					if(node!=NULL){
+						elapsed += node->val;
+						rb_delete(node->val);
+					}
+					RBNode * nnode = kmalloc(sizeof(RBNode), GFP_KERNEL);
+					if(node==NULL) return -1;
+					nnode->val = elapsed;
+					nnode->pid = prev_task;
+					hmp->rb_key = elapsed;
+					rb_insert(nnode);
+			}
+	
+		}
+		found = false;
+		hash_for_each_possible(hm, hmp, node, curr_task){
+			if(hmp->key==curr_task){
+				hmp->val = curr;
+			}
+			found = true;
+		
+		}
+		if(!found){
+			struct hm_node * hmn = kmalloc(sizeof(struct hm_node), GFP_KERNEL);
+			if(hmn==NULL){
+				return -1;
+			}
+			hmn->key = curr_task;
+			hmn->val = curr;
+			hmn->rb_key = curr_task;
+			hash_add(hm, &hmn->node, hmn->key);
+			RBNode * node = kmalloc(sizeof(RBNode), GFP_KERNEL);
+			if(node==NULL) return -1;
+			node->val = curr_task;
+			node->pid =curr_task;
+			rb_insert(node);
+		}
+		spin_unlock(&xxx_lock);
+	}
+	
 	return 0;
 }
 NOKPROBE_SYMBOL(ret_handler);
@@ -88,14 +236,13 @@ NOKPROBE_SYMBOL(ret_handler);
 static struct kretprobe my_kretprobe = {
 	.handler		= ret_handler,
 	.entry_handler		= entry_handler,
-	.data_size		= sizeof(struct my_data),
 	/* Probe up to 20 instances concurrently. */
 	.maxactive		= 20,
 };
 
 
 
-int static pr_init(void){
+int pr_init(void){
 	int ret;
     ent=proc_create("perftop",0660,NULL,&ops);
 	my_kretprobe.kp.symbol_name = func_name;
@@ -111,13 +258,11 @@ int static pr_init(void){
 
 
 
-static void pr_cleanup(void){
+ void pr_cleanup(void){
 	unregister_kretprobe(&my_kretprobe);
 	pr_info("kretprobe at %p unregistered\n", my_kretprobe.kp.addr);
 
 	/* nmissed > 0 suggests that maxactive was set too low. */
-	pr_info("Missed probing %d instances of %s\n",
-		my_kretprobe.nmissed, my_kretprobe.kp.symbol_name);
     proc_remove(ent);
 }
 

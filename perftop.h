@@ -7,9 +7,15 @@
 #include <linux/uaccess.h>
 #include <linux/seq_file.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/kprobes.h>
 #include <linux/ktime.h>
 #include <linux/limits.h>
 #include <linux/sched.h>
 
+
+
+
+
+
+#include <linux/rbtree.h>
+#include <linux/hashtable.h>

@@ -12,11 +12,11 @@ else
     PWD := $(shell pwd)
 
 all:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules 
 endif
 
 CC=gcc
-LOCAL_CFLAGS=-Wall -Werror
+LOCAL_CFLAGS=-Wall -Werror -DCC_USING_FENTRY 
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
