@@ -68,7 +68,7 @@ RBNode * rb_find(int val){
     while(p){
         RBNode * entry = rb_entry(p, RBNode, node);
         if(entry->val==val){
-            pr_info("Found RB Node entry: %d\n", val);
+         //   pr_info("Found RB Node entry: %d\n", val);
             return entry;
         }
         else if(entry->val>val)
@@ -83,11 +83,11 @@ RBNode * rb_find(int val){
 void rb_delete(int val){
     RBNode * node = rb_find(val);
     if(node==NULL){
-        pr_info("Node not found for deletion for value: %d\n", val);
+     //   pr_info("Node not found for deletion for value: %d\n", val);
     }
     rb_erase(&node->node, rbroot);
     kfree(node);
-    pr_info("Erased and freed %d node from RB tree\n", val);
+   // pr_info("Erased and freed %d node from RB tree\n", val);
 }
 
 
@@ -124,7 +124,7 @@ static struct proc_dir_entry *ent;
 static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     entry_count++;
-    int pid = regs->si;
+    int pid = regs_get_register(regs, 14);
 	task = pid;
 	ktime_t time = ktime_get();
 	
@@ -174,7 +174,7 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	int prev_task;
     if(task != regs->ax){
 		prev_task = task;
-		int curr_task = regs->ax;
+		int curr_task =  regs_get_register(regs, 14);
         ktime_t curr = ktime_get();
 		ctx_switch_count++;
 		ktime_t elapsed;
@@ -251,7 +251,7 @@ int pr_init(void){
 		pr_err("register_kretprobe failed, returned %d\n", ret);
 		return -1;
 	}
-	pr_info("Planted return probe at %s: %p\n",
+	//pr_info("Planted return probe at %s: %p\n",
 			my_kretprobe.kp.symbol_name, my_kretprobe.kp.addr);
 	return 0;
 }
@@ -260,7 +260,7 @@ int pr_init(void){
 
  void pr_cleanup(void){
 	unregister_kretprobe(&my_kretprobe);
-	pr_info("kretprobe at %p unregistered\n", my_kretprobe.kp.addr);
+	//pr_info("kretprobe at %p unregistered\n", my_kretprobe.kp.addr);
 
 	/* nmissed > 0 suggests that maxactive was set too low. */
     proc_remove(ent);
