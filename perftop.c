@@ -1,3 +1,9 @@
+
+
+
+
+
+
 #include "perftop.h"
 
 
@@ -128,7 +134,9 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
     int pid = regs->si;
 	task = pid;
 	u64 time;
-    asm volatile("mrs %0, cntvct_el0" : "=r" (time));
+	unsigned long lo, hi;
+    asm( "rdtsc" : "=a" (lo), "=d" (hi) ); 
+    time = ( lo | (hi << 32));
 	spin_lock(&xxx_lock);
 	int bkt;
     struct hm_node * hmp;
@@ -149,13 +157,16 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		}
 		hmn->key = pid;
 		hmn->val = time;
-		hmn->rb_key = pid;
+		unsigned int hsh;
+		get_random_bytes(&hsh, sizeof(hsh));
+		hsh%=32000;
+		hmn->rb_key = hsh;
 		hash_add(hm, &hmn->node, hmn->key);
 		//printk(KERN_ALERT "Allocating for rb node\n");
 		RBNode * node = kmalloc(sizeof(RBNode), GFP_ATOMIC);
 		memset(node, 0, sizeof(RBNode));
 		if(node==NULL) return -1;
-		node->val = pid;
+		node->val = hsh;
 		node->pid =pid;
 		rb_insert(node);
 // 		printk(KERN_ALERT "Inserted \n");
@@ -179,9 +190,11 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		return 0;
     if(task != regs->ax){
 		prev_task = task;
-		int curr_task =  regs_get_register(regs, 14);
+		int curr_task =  regs->ax;
         u64 curr;
-    asm volatile("mrs %0, cntvct_el0" : "=r" (curr));
+      	unsigned long lo, hi;
+        asm( "rdtsc" : "=a" (lo), "=d" (hi) ); 
+        curr = ( lo | (hi << 32) );
 		ctx_switch_count++;
 		u64 elapsed;
 		
@@ -225,13 +238,16 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 				return -1;
 			}
 			hmn->key = curr_task;
+			unsigned int hsh;
+		get_random_bytes(&hsh, sizeof(hsh));
+		hsh%=32000;
 			hmn->val = curr;
-			hmn->rb_key = curr_task;
+			hmn->rb_key = hsh;
 			hash_add(hm, &hmn->node, hmn->key);
 			RBNode * node= kmalloc(sizeof(RBNode), GFP_ATOMIC);
 			memset(node, 0, sizeof(RBNode));
 			if(node==NULL) return -1;
-			node->val = curr_task;
+			node->val = hsh;
 			node->pid =curr_task;
 			rb_insert(node);
 		}
