@@ -23,14 +23,14 @@ int task;
 
 
  struct my_data {
-        ktime_t entry_stamp;
+        u64 entry_stamp;
     };
 
 struct hm_node{
     int key;
     struct hlist_node node;
-	ktime_t  val;
-	ktime_t rb_key;
+	u64  val;
+	u64 rb_key;
 };
 
 DEFINE_HASHTABLE(hm, 9);
@@ -51,7 +51,7 @@ void rb_insert(RBNode * new_node){
     struct rb_node ** p = &(rbroot->rb_node);
     struct rb_node * prev = NULL;
     int val = new_node->val;
-            while(*p){
+            while(*p!=NULL){
                 prev = *p;
                 RBNode * entry = rb_entry(*p, RBNode, node);
                 if(entry->val>val)
@@ -99,7 +99,7 @@ static int proc_show(struct seq_file *m, void *v) {
   while(p&&count>0){
 	  count--;
 	  RBNode * entry = rb_entry(p, RBNode, node);
-	  seq_printf(m, "%d) PID: %d time: %llu\n", 10-count, entry->pid, entry->val);
+	  seq_printf(m, "%d) PID: %d time: %lu\n", 10-count, entry->pid, entry->val);
 	  p = rb_prev(p);
   }
   return 0;
@@ -123,11 +123,12 @@ static struct proc_dir_entry *ent;
 /* Here we use the entry_hanlder to timestamp function entry */
 static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
+	if(regs==NULL) return 0;
     entry_count++;
-    int pid = regs_get_register(regs, 14);
+    int pid = regs->sp;
 	task = pid;
-	ktime_t time = ktime_get();
-	
+	u64 time;
+    asm volatile("mrs %0, cntvct_el0" : "=r" (time));
 	spin_lock(&xxx_lock);
 	int bkt;
     struct hm_node * hmp;
@@ -139,9 +140,10 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 			hmp->val = time;
 		}
 	}
-	if(!found){
-		//printk(KERN_ALERT "Allocating for hm node\n");
-		struct hm_node * hmn = kmalloc(sizeof(struct hm_node), GFP_KERNEL);
+ 	if(!found){
+// 		//printk(KERN_ALERT "Allocating for hm node\n");
+ 		struct hm_node * hmn = kmalloc(sizeof(struct hm_node), GFP_ATOMIC);
+		memset(hmn, 0, sizeof(struct hm_node));
 		if(hmn==NULL){
 			return -1;
 		}
@@ -150,12 +152,13 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		hmn->rb_key = pid;
 		hash_add(hm, &hmn->node, hmn->key);
 		//printk(KERN_ALERT "Allocating for rb node\n");
-		RBNode * node = kmalloc(sizeof(RBNode), GFP_KERNEL);
+		RBNode * node = kmalloc(sizeof(RBNode), GFP_ATOMIC);
+		memset(node, 0, sizeof(RBNode));
 		if(node==NULL) return -1;
 		node->val = pid;
 		node->pid =pid;
 		rb_insert(node);
-	//	printk(KERN_ALERT "Inserted \n");
+// 		printk(KERN_ALERT "Inserted \n");
 }
 	spin_unlock(&xxx_lock);
 
@@ -172,12 +175,15 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     ret_count++;
 	int prev_task;
-    if(task != regs->ax){
+	if(regs==NULL)
+		return 0;
+    if(task != regs->sp){
 		prev_task = task;
 		int curr_task =  regs_get_register(regs, 14);
-        ktime_t curr = ktime_get();
+        u64 curr;
+    asm volatile("mrs %0, cntvct_el0" : "=r" (curr));
 		ctx_switch_count++;
-		ktime_t elapsed;
+		u64 elapsed;
 		
     
 		bool found = false;
@@ -194,7 +200,8 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 						elapsed += node->val;
 						rb_delete(node->val);
 					}
-					RBNode * nnode = kmalloc(sizeof(RBNode), GFP_KERNEL);
+					RBNode * nnode = kmalloc(sizeof(RBNode), GFP_ATOMIC);
+					memset(nnode, 0, sizeof(RBNode));
 					if(node==NULL) return -1;
 					nnode->val = elapsed;
 					nnode->pid = prev_task;
@@ -212,7 +219,8 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		
 		}
 		if(!found){
-			struct hm_node * hmn = kmalloc(sizeof(struct hm_node), GFP_KERNEL);
+			struct hm_node * hmn = kmalloc(sizeof(struct hm_node), GFP_ATOMIC);
+			memset(hmn, 0, sizeof(struct hm_node));
 			if(hmn==NULL){
 				return -1;
 			}
@@ -220,7 +228,8 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 			hmn->val = curr;
 			hmn->rb_key = curr_task;
 			hash_add(hm, &hmn->node, hmn->key);
-			RBNode * node = kmalloc(sizeof(RBNode), GFP_KERNEL);
+			RBNode * node= kmalloc(sizeof(RBNode), GFP_ATOMIC);
+			memset(node, 0, sizeof(RBNode));
 			if(node==NULL) return -1;
 			node->val = curr_task;
 			node->pid =curr_task;
@@ -244,6 +253,8 @@ static struct kretprobe my_kretprobe = {
 
 int pr_init(void){
 	int ret;
+	rbroot = kmalloc(sizeof(struct rb_root), GFP_KERNEL);
+    *rbroot = RB_ROOT;
     ent=proc_create("perftop",0660,NULL,&ops);
 	my_kretprobe.kp.symbol_name = func_name;
 	ret = register_kretprobe(&my_kretprobe);
@@ -251,8 +262,9 @@ int pr_init(void){
 		pr_err("register_kretprobe failed, returned %d\n", ret);
 		return -1;
 	}
+	
 	//pr_info("Planted return probe at %s: %p\n",
-			my_kretprobe.kp.symbol_name, my_kretprobe.kp.addr);
+		//	my_kretprobe.kp.symbol_name, my_kretprobe.kp.addr);
 	return 0;
 }
 
