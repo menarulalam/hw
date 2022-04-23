@@ -125,7 +125,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	if(regs==NULL) return 0;
     entry_count++;
-    int pid = regs->sp;
+    int pid = regs->si;
 	task = pid;
 	u64 time;
     asm volatile("mrs %0, cntvct_el0" : "=r" (time));
@@ -177,7 +177,7 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	int prev_task;
 	if(regs==NULL)
 		return 0;
-    if(task != regs->sp){
+    if(task != regs->ax){
 		prev_task = task;
 		int curr_task =  regs_get_register(regs, 14);
         u64 curr;
